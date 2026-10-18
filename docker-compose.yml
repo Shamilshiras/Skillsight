@@ -1,0 +1,118 @@
+version: '3.8'
+
+services:
+  # MySQL Database Service
+  mysql:
+    image: mysql:8.0
+    container_name: skillsight-mysql
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: skillsight_db
+      MYSQL_USER: skillsight_user
+      MYSQL_PASSWORD: skillsight_pass
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      timeout: 10s
+      retries: 10
+
+  # SkillSight Django Web Dashboard
+  web:
+    build: .
+    container_name: skillsight-web
+    restart: always
+    command: >
+      sh -c "python manage.py migrate &&
+             python scripts/seed_historical_data.py 45 &&
+             python manage.py runserver 0.0.0.0:8000"
+    volumes:
+      - .:/app
+    ports:
+      - "8000:8000"
+    environment:
+      - DEBUG=True
+      - DB_ENGINE=mysql
+      - DB_NAME=skillsight_db
+      - DB_USER=skillsight_user
+      - DB_PASSWORD=skillsight_pass
+      - DB_HOST=mysql
+      - DB_PORT=3306
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  # Airflow DB Migration & Admin User Initialization
+  airflow-init:
+    image: apache/airflow:2.8.1-python3.10
+    container_name: skillsight-airflow-init
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=mysql+mysqldb://skillsight_user:skillsight_pass@mysql:3306/skillsight_db
+      - _AIRFLOW_DB_MIGRATE=true
+      - _AIRFLOW_WWW_USER_CREATE=true
+      - _AIRFLOW_WWW_USER_USERNAME=admin
+      - _AIRFLOW_WWW_USER_PASSWORD=admin
+    command: version
+
+  # Apache Airflow Webserver & Scheduler
+  airflow-webserver:
+    image: apache/airflow:2.8.1-python3.10
+    container_name: skillsight-airflow-webserver
+    restart: always
+    command: webserver
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./etl:/opt/airflow/etl
+      - ./dashboard:/opt/airflow/dashboard
+      - ./skillsight:/opt/airflow/skillsight
+      - ./manage.py:/opt/airflow/manage.py
+    environment:
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=mysql+mysqldb://skillsight_user:skillsight_pass@mysql:3306/skillsight_db
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=False
+      - _PIP_ADDITIONAL_REQUIREMENTS=django>=5.0 djangorestframework>=3.14 pandas>=2.0 requests>=2.31 python-dotenv>=1.0 pymysql>=1.1
+      - DB_ENGINE=mysql
+      - DB_NAME=skillsight_db
+      - DB_USER=skillsight_user
+      - DB_PASSWORD=skillsight_pass
+      - DB_HOST=mysql
+      - DB_PORT=3306
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    image: apache/airflow:2.8.1-python3.10
+    container_name: skillsight-airflow-scheduler
+    restart: always
+    command: scheduler
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./etl:/opt/airflow/etl
+      - ./dashboard:/opt/airflow/dashboard
+      - ./skillsight:/opt/airflow/skillsight
+      - ./manage.py:/opt/airflow/manage.py
+    environment:
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=mysql+mysqldb://skillsight_user:skillsight_pass@mysql:3306/skillsight_db
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - _PIP_ADDITIONAL_REQUIREMENTS=django>=5.0 djangorestframework>=3.14 pandas>=2.0 requests>=2.31 python-dotenv>=1.0 pymysql>=1.1
+      - DB_ENGINE=mysql
+      - DB_NAME=skillsight_db
+      - DB_USER=skillsight_user
+      - DB_PASSWORD=skillsight_pass
+      - DB_HOST=mysql
+      - DB_PORT=3306
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+volumes:
+  mysql_data:
